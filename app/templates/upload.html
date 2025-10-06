@@ -7,7 +7,7 @@
             type="text/javascript"></script>
 
     <style>
-        /* Занимаем всю высоту окна */
+        /* Основные стили страницы */
         html, body {
             margin: 0;
             padding: 0;
@@ -20,126 +20,514 @@
             display: flex;
             flex-direction: column;
             min-height: 100vh;
-            padding: 20px; /* отступы от краёв окна */
+            padding: 5px 20px;
         }
 
+        /* Стили формы загрузки */
         form {
-            /* Пусть форма занимает только нужное пространство */
             margin-bottom: 10px;
-            max-width: 600px;
+            max-width: 1000px;
         }
 
+        /* Стили карты */
         #map {
-            flex-grow: 1; /* карта занимает всё оставшееся пространство */
-            min-height: 300px; /* минимальная высота для маленьких экранов */
+            height: 450px;
             border: 1px solid #ccc;
             border-radius: 8px;
+        }
+
+        /* Стили сообщений */
+        .alert {
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+        }
+
+        .alert-error {
+            color: #a94442;
+            background-color: #f2dede;
+            border-color: #ebccd1;
+        }
+
+        .toggle-errors {
+            color: #5d8aa8;
+            cursor: pointer;
+        }
+
+        .alert-warning {
+            color: #856404;
+            background-color: #fff3cd;
+            border-color: #ffeeba;
+        }
+
+        /* Стили кнопок */
+        #draw-polygon, #clear-polygon, #find-houses {
+            padding: 8px 15px;
+            margin-right: 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        #draw-polygon:hover, #clear-polygon:hover, #find-houses:hover {
+            background-color: #45a049;
+        }
+
+        /* Стили результатов поиска */
+        #polygon-results {
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+
+        #missing-houses-list {
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 10px;
         }
     </style>
 </head>
 <body>
-<h1>Загрузка Excel файла</h1>
+<!-- Форма загрузки файла -->
+<h2>Загрузка Excel файла</h2>
 <form method="post" enctype="multipart/form-data">
     {% csrf_token %}
     <input type="file" name="excel_file" accept=".xlsx" required><br><br>
     <button type="submit">Загрузить</button>
 </form>
+
+<!-- Информация о загруженном файле -->
 {% if filename %}
     <p>Загружен файл: <strong>{{ filename }}</strong></p>
 {% endif %}
 
-<div id="map"></div>
-
-{% if addresses %}
-    {{ addresses|json_script:"addr-data" }}
+<!-- Сообщения об ошибках -->
+{% if messages %}
+<div class="messages">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags }}">
+        {{ message }}
+        {% if all_houses_rows and "номеров домов" in message|stringformat:"s" or all_streets_rows and "названия улицы" in message|stringformat:"s" or empty_field_rows and "пустыми полями" in message|stringformat:"s" or invalid_houses_rows and "некорректные значения" in message|stringformat:"s" %}
+            <div class="error-details" style="margin-top: 4px;">
+                <a href="#" class="toggle-errors">показать номера строк в файле</a>
+                <div class="full-error-list" style="display: none; max-height: 150px; overflow-y: auto;">
+                    {% if "номеров домов" in message|stringformat:"s" %}
+                        {{ all_houses_rows|join:", " }}
+                    {% elif "названия улицы" in message|stringformat:"s" %}
+                        {{ all_streets_rows|join:", " }}
+                    {% elif "пустыми полями" in message|stringformat:"s" %}
+                        {{ empty_field_rows|join:", " }}
+                    {% else %}
+                        {{ invalid_houses_rows|join:", " }}
+                    {% endif %}
+                </div>
+            </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
 {% endif %}
 
 <script>
+// Обработчик для переключения отображения списка ошибок
+document.addEventListener('DOMContentLoaded', function() {
+    const toggleButtons = document.querySelectorAll('.toggle-errors');
+    toggleButtons.forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const errorList = this.nextElementSibling;
+            if (errorList.style.display === 'none') {
+                errorList.style.display = 'block';
+                this.textContent = 'скрыть список';
+            } else {
+                errorList.style.display = 'none';
+                this.textContent = 'показать номера строк в файле';
+            }
+        });
+    });
+});
+</script>
+
+<!-- Контейнер для данных адресов и предупреждений -->
+{% if addresses %}
+    {{ addresses|json_script:"addr-data" }}
+    <div id="not-found-addresses-warning" class="alert alert-warning" style="display: none;"></div>
+{% endif %}
+
+<!-- Основная карта -->
+<div id="map"></div>
+
+<!-- Управление полигоном -->
+<div style="margin: 10px 0;">
+    <button id="draw-polygon">Нарисовать полигон</button>
+    <button id="clear-polygon" style="display: none;">Очистить полигон</button>
+    <button id="find-houses" style="display: none;">Найти дома внутри полигона</button>
+</div>
+
+<!-- Результаты поиска по полигону -->
+<div id="polygon-results" style="display: none; margin-top: 20px;">
+    <h3>Дома внутри территории:</h3>
+    <div id="missing-houses-list"></div>
+</div>
+
+<!-- Управление группами меток -->
+{% if addresses %}
+    <div style="margin: 10px 0 5px 0; text-align: right;">
+        <button id="toggle-all">Выделить все</button>
+    </div>
+    <div id="checkboxes" style="margin: 10;">
+        <h3 style="margin: 5px 0;">Участки:</h3>
+    </div>
+{% endif %}
+
+<script>
+    // Основной код для работы с картой
     ymaps.ready(function () {
+        // Инициализация карты
         var myMap = new ymaps.Map("map", {
             center: [55.796289, 49.108795],
             zoom: 10
+        }, {
+            suppressMapOpenBlock: true
+        });
+
+        let polygon = null;
+        let polygonDrawingManager = null;
+
+        // Управление полигоном
+        // Кнопка рисования полигона
+        document.getElementById('draw-polygon').addEventListener('click', function() {
+            if (polygon) {
+                myMap.geoObjects.remove(polygon);
+                polygon = null;
+            }
+
+            // Отключаем все другие режимы
+            myMap.behaviors.disable('scrollZoom');
+
+            // Создаем многоугольник
+            polygonDrawingManager = new ymaps.Polygon([], {}, {
+                editorDrawingCursor: "crosshair",
+                editorMaxPoints: 100,
+                fillColor: '#00FF00',
+                strokeColor: '#0000FF',
+                strokeWidth: 2,
+                opacity: 0.5
+            });
+
+            myMap.geoObjects.add(polygonDrawingManager);
+
+            // Включаем режим рисования
+            polygonDrawingManager.editor.startDrawing();
+
+            // Кнопки управления
+            document.getElementById('clear-polygon').style.display = 'inline-block';
+            document.getElementById('draw-polygon').style.display = 'none';
+            document.getElementById('find-houses').style.display = 'none';
+
+            // Слушаем событие окончания рисования
+            polygonDrawingManager.editor.events.add('drawingstop', function() {
+                polygon = polygonDrawingManager;
+                polygonDrawingManager = null;
+                document.getElementById('find-houses').style.display = 'inline-block';
+                myMap.behaviors.enable('scrollZoom');
+            });
+        });
+
+        // Кнопка очистки полигона
+        document.getElementById('clear-polygon').addEventListener('click', function() {
+            // Удаляем полигон с карты
+            if (polygon) {
+                myMap.geoObjects.remove(polygon);
+                polygon = null;
+            }
+
+            // Если есть активный менеджер рисования, удаляем и его
+            if (polygonDrawingManager) {
+                myMap.geoObjects.remove(polygonDrawingManager);
+                polygonDrawingManager = null;
+            }
+
+            // Возвращаем скролл карты
+            myMap.behaviors.enable('scrollZoom');
+
+            // Возвращаем кнопки в исходное состояние
+            document.getElementById('draw-polygon').style.display = 'inline-block';
+            document.getElementById('clear-polygon').style.display = 'none';
+            document.getElementById('find-houses').style.display = 'none';
+
+            // Скрываем результаты поиска домов, если они были показаны
+            document.getElementById('polygon-results').style.display = 'none';
+        });
+
+        // Кнопка поиска домов
+        document.getElementById('find-houses').addEventListener('click', function() {
+            if (!polygon || !polygon.geometry) {
+                alert('Сначала нарисуйте полигон');
+                return;
+            }
+
+            // Получаем координаты полигона
+            const polygonCoords = polygon.geometry.getCoordinates()[0];
+
+            // Создаем объект для хранения найденных домов
+            const housesInside = [];
+
+            // Проверяем все метки на карте
+            myMap.geoObjects.each(function(geoObject) {
+                if (geoObject.geometry && geoObject.geometry.getCoordinates && geoObject.properties) {
+                    try {
+                        const coords = geoObject.geometry.getCoordinates();
+
+                        // Проверяем, находится ли точка внутри полигона
+                        if (ymaps.geometry.isInside(coords, polygonCoords)) {
+                            // Получаем данные метки
+                            const properties = geoObject.properties.getAll();
+                            const address = properties.hintContent || properties.name || 'Адрес не указан';
+                            let group = 'неизвестно';
+
+                            // Пытаемся извлечь номер группы из разных возможных свойств
+                            if (properties.balloonContent) {
+                                const match = properties.balloonContent.match(/№ (\d+):/);
+                                if (match) group = match[1];
+                            } else if (properties.group) {
+                                group = properties.group;
+                            }
+
+                            housesInside.push({
+                                address: address,
+                                group: group
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Ошибка при обработке геообъекта:', e);
+                    }
+                }
+            });
+
+            // Отображаем результаты
+            const resultsContainer = document.getElementById('missing-houses-list');
+            resultsContainer.innerHTML = '';
+
+            if (housesInside.length === 0) {
+                resultsContainer.innerHTML = '<p>Внутри полигона не найдено ни одного дома</p>';
+            } else {
+                // Сортируем дома по номеру группы
+                housesInside.sort((a, b) => a.group - b.group);
+
+                // Создаем список
+                const list = document.createElement('ul');
+                housesInside.forEach(house => {
+                    const item = document.createElement('li');
+                    item.textContent = `Участок №${house.group}: ${house.address}`;
+                    list.appendChild(item);
+                });
+                resultsContainer.appendChild(list);
+            }
+
+            // Показываем блок с результатами
+            document.getElementById('polygon-results').style.display = 'block';
         });
 
         {% if addresses %}
+            // Обработка данных адресов
             const addressData = JSON.parse(document.getElementById('addr-data').textContent);
 
-            const colorPresets = [
-                'islands#redIcon',
-                'islands#blueIcon',
-                'islands#greenIcon',
-                'islands#orangeIcon',
-                'islands#violetIcon',
-                'islands#darkBlueIcon',
-                'islands#blackIcon',
-                'islands#yellowIcon',
-                'islands#pinkIcon',
-                'islands#brownIcon',
-                'islands#cyanIcon',
-                'islands#grayIcon',
-                'islands#lightBlueIcon',
-                'islands#lightGreenIcon',
-                'islands#redCircleIcon',
-                'islands#blueCircleIcon',
-                'islands#greenCircleIcon',
-                'islands#orangeCircleIcon',
-                'islands#violetCircleIcon',
-                'islands#yellowCircleIcon',
+            // Координаты ЖК "Лесной городок"
+            const FOREST_TOWN_COORDS = [55.711, 49.184];
+
+            // Палитра цветов для групп
+            const groupColorsList = [
+                '#fb2e02', '#62eaf4', '#f7f30b', '#f99cb0', '#fb9f02',
+                '#a2c91c', '#057ce1', '#a45a3f', '#a402fb', '#05e9c0',
+                '#8c91ee', '#6602fb', '#aaf45a', '#023ffb', '#fe43cd',
+                '#423b43', '#fb6202', '#0cd289', '#d775ff', '#8e8e8d',
+                '#fb026b', '#02b5fb', '#5f7aa1', '#fb9f02', '#2e02fb'
             ];
 
             const groupColors = {};
-            let colorIndex = 0;
+            const groupPlacemarks = {};
+            const notFoundAddresses = [];
+            const notFoundRows = new Set();
 
+            // Создание чекбоксов и меток
             addressData.forEach(item => {
                 const group = item.group;
+
                 if (!groupColors[group]) {
-                    groupColors[group] = colorPresets[colorIndex % colorPresets.length];
-                    colorIndex++;
+                    // Назначаем уникальный цвет группе
+                    const color = groupColorsList[(group - 1) % groupColorsList.length];
+                    groupColors[group] = color;
+                    groupPlacemarks[group] = [];
+
+                    // Создаём чекбокс
+                    const checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    checkbox.id = `group-${group}`;
+                    checkbox.checked = true;
+                    checkbox.dataset.group = group;
+
+                    const label = document.createElement("label");
+                    label.htmlFor = checkbox.id;
+                    label.style.display = "inline-block";
+                    label.style.marginRight = "20px";
+                    label.style.marginBottom = "10px";
+
+                    label.innerHTML = `<span style="
+                        display:inline-block;
+                        width:12px;
+                        height:12px;
+                        background-color: ${color};
+                        margin-right:5px;
+                        border:1px solid #333;
+                    "></span> №${group}`;
+
+                    checkbox.addEventListener("change", function () {
+                        const checked = this.checked;
+                        groupPlacemarks[group].forEach(pm => {
+                            if (checked) {
+                                myMap.geoObjects.add(pm);
+                            } else {
+                                myMap.geoObjects.remove(pm);
+                            }
+                        });
+                    });
+
+                    document.getElementById("checkboxes").appendChild(checkbox);
+                    document.getElementById("checkboxes").appendChild(label);
+
                 }
 
-                if (item.house) {
-                    ymaps.geocode(item.street + ', ' + item.house, {results: 1}).then(res => {
+                // Геокодирование
+                if (item.is_forest_town) {
+                    const placemark = new ymaps.Placemark(FOREST_TOWN_COORDS, {
+                        hintContent: "ЖК Лесной городок",
+                        balloonContent: `№ ${item.group}: ЖК Лесной городок, ${item.street}`
+                    }, {
+                        preset: 'islands#icon',
+                        iconColor: groupColors[item.group],
+                        iconCaption: "Лесной городок"
+                    });
+                    groupPlacemarks[group].push(placemark);
+                    myMap.geoObjects.add(placemark);
+                } else {
+                    // Геокодирование обычного адреса
+                    const address = item.house
+                        ? `${item.city}, ${item.street}, ${item.house}`
+                        : `${item.city}, ${item.street}`;
+
+                    ymaps.geocode(address, {results: 1}).then(res => {
                         const geoObject = res.geoObjects.get(0);
                         if (geoObject) {
-                            const coords = geoObject.geometry.getCoordinates();
-                            const placemark = new ymaps.Placemark(coords, {
-                                hintContent: `${item.street}, ${item.house}`,
-                                balloonContent: `Группа ${group}: ${item.street}, ${item.house}`
-                            }, {
-                                preset: groupColors[group]
+                            // Проверяем точность геокодирования
+                            const precision = geoObject.properties.get('metaDataProperty.GeocoderMetaData.precision');
+                            if (precision === 'exact' || precision === 'number' || precision === 'near' || precision === 'range') {
+                                // Адрес найден
+                                const coords = geoObject.geometry.getCoordinates();
+                                const placemark = new ymaps.Placemark(coords, {
+                                    hintContent: address,
+                                    balloonContent: `№ ${item.group}: ${address}`
+                                }, {
+                                    preset: 'islands#icon',
+                                    iconColor: groupColors[item.group]
+                                });
+                                groupPlacemarks[group].push(placemark);
+                                myMap.geoObjects.add(placemark);
+                            } else {
+                                // Адрес найден, но с низкой точностью (например, только город)
+                                notFoundAddresses.push({
+                                    group: item.group,
+                                    address: address,
+                                    message: 'Некорректный адрес'
+                                });
+                                if (item.row_num) notFoundRows.add(item.row_num);
+                            }
+                        } else {
+                            // Адрес не найден
+                            notFoundAddresses.push({
+                                group: item.group,
+                                address: address,
+                                message: 'Адрес не найден на карте'
                             });
-                            myMap.geoObjects.add(placemark);
+                            if (item.row_num) notFoundRows.add(item.row_num);
                         }
-                    }).catch(err => {
-                        console.error('Ошибка геокодирования адреса:', err);
-                    });
-                } else {
-                    ymaps.geocode("Казань, " + item.street, {kind: 'house', results: 50}).then(res => {
-                        const geoObjects = res.geoObjects;
-                        if (geoObjects.getLength() === 0) {
-                            console.log('Дома не найдены на улице:', item.street);
-                            return;
-                        }
-                        geoObjects.each(geoObject => {
-                            const coords = geoObject.geometry.getCoordinates();
-                            const address = geoObject.getAddressLine();
-
-                            const placemark = new ymaps.Placemark(coords, {
-                                hintContent: address,
-                                balloonContent: `Группа ${group}: ${address}`
-                            }, {
-                                preset: groupColors[group]
-                            });
-                            myMap.geoObjects.add(placemark);
+                    }, function(err) {
+                        // Ошибка геокодирования
+                        notFoundAddresses.push({
+                            group: item.group,
+                            address: address,
+                            message: 'Ошибка при поиске адреса: ' + (err.message || 'неизвестная ошибка')
                         });
-                    }).catch(err => {
-                        console.error('Ошибка геокодирования улицы:', err);
+                        if (item.row_num) notFoundRows.add(item.row_num);
                     });
                 }
+            });
 
+            // Показать список ненайденных адресов
+            setTimeout(() => {
+                if (notFoundAddresses.length > 0) {
+                    const warningContainer = document.getElementById('not-found-addresses-warning');
+
+                    let html = "<strong>Не найдены координаты для адресов:</strong><ul>";
+                    notFoundAddresses.forEach(item => {
+                        html += `<li>Участок №${item.group}: ${item.address} - ${item.message}</li>`;
+                    });
+                    html += "</ul>";
+
+                    // Добавляем кнопку для показа номеров строк
+                    html += `<div style="margin-top: 10px;">
+                        <a href="#" id="show-not-found-rows" style="color: #5d8aa8; cursor: pointer;">
+                            показать номера строк в файле
+                        </a>
+                        <div id="not-found-rows-list" style="display: none; margin-top: 5px;">
+                            ${Array.from(notFoundRows).join(', ')}
+                        </div>
+                    </div>`;
+
+                    warningContainer.innerHTML = html;
+                    warningContainer.style.display = 'block';
+
+                    // Обработчик для кнопки показа номеров строк
+                    document.getElementById('show-not-found-rows').addEventListener('click', function(e) {
+                        e.preventDefault();
+                        const list = document.getElementById('not-found-rows-list');
+                        if (list.style.display === 'none') {
+                            list.style.display = 'block';
+                            this.textContent = 'скрыть список';
+                        } else {
+                            list.style.display = 'none';
+                            this.textContent = 'показать номера строк в файле';
+                        }
+                    });
+                }
+            }, 2000);
+
+            // Обработчик кнопки "Выделить все"
+            document.getElementById("toggle-all").addEventListener("click", () => {
+                const allCheckboxes = document.querySelectorAll('#checkboxes input[type="checkbox"]');
+                const allChecked = Array.from(allCheckboxes).every(cb => cb.checked);
+
+                allCheckboxes.forEach(cb => {
+                    cb.checked = !allChecked;
+                    const group = cb.dataset.group;
+                    groupPlacemarks[group].forEach(pm => {
+                        if (!allChecked) {
+                            myMap.geoObjects.add(pm);
+                        } else {
+                            myMap.geoObjects.remove(pm);
+                        }
+                    });
+                });
+
+                document.getElementById("toggle-all").innerText = allChecked ? "Выделить все" : "Снять все";
             });
         {% endif %}
     });
 </script>
+
 </body>
 </html>
